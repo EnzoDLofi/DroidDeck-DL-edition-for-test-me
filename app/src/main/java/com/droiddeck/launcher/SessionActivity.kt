@@ -4223,22 +4223,27 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback, com.droidde
                 gamePictureBounds[2], gamePictureBounds[3]
             )
 
+            val outputWidth: Int
+            val outputHeight: Int
             if (glassesOutputActive) {
                 val mode = glassesScreen?.display?.mode ?: return null
-                val outputWidth = mode.physicalWidth.takeIf { it > 0 } ?: return null
-                val outputHeight = mode.physicalHeight.takeIf { it > 0 } ?: return null
-                val scaleX = width.toFloat() / outputWidth
-                val scaleY = height.toFloat() / outputHeight
-
-                return android.graphics.RectF(
-                    rect.left * scaleX,
-                    rect.top * scaleY,
-                    rect.right * scaleX,
-                    rect.bottom * scaleY
-                )
+                outputWidth = mode.physicalWidth.takeIf { it > 0 } ?: return null
+                outputHeight = mode.physicalHeight.takeIf { it > 0 } ?: return null
+            } else {
+                val out = SessionState.outputSize
+                outputWidth = out.first.takeIf { it > 0 } ?: return null
+                outputHeight = out.second.takeIf { it > 0 } ?: return null
             }
 
-            return rect
+            val scaleX = width.toFloat() / outputWidth
+            val scaleY = height.toFloat() / outputHeight
+
+            return android.graphics.RectF(
+                rect.left * scaleX,
+                rect.top * scaleY,
+                rect.right * scaleX,
+                rect.bottom * scaleY
+            )
         }
         val out = SessionState.outputSize
         val scale = minOf(width / out.first.toFloat(), height / out.second.toFloat())
