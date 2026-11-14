@@ -428,8 +428,7 @@ class SessionService : Service() {
         if (SessionPrefs.clearCachedApps(this)) clearCachedApps()
         cancelQueuedSteamGame(clearMailbox = false)
         clearSteamGameMailbox()
-        if (SessionState.mode == MODE_STEAM &&
-            SessionState.steamUrl?.startsWith(GAME_URL_PREFIX) == true) {
+        if (SessionState.mode == MODE_STEAM) {
             resolvedGameId?.let { watchGameExit(it, gen, ++gameExitWatchToken) }
         }
         acquireLocks()
