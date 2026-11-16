@@ -85,6 +85,12 @@ object SessionPrefs {
         prefs(context).edit().putBoolean("launcherFullscreen", on).apply()
     }
 
+    fun blackFrameInsertion(context: Context): Boolean = prefs(context).getBoolean("blackFrameInsertion", false)
+
+    fun setBlackFrameInsertion(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("blackFrameInsertion", on).apply()
+    }
+
     fun animationsEnabled(context: Context): Boolean = prefs(context).getBoolean("animations", true)
 
     fun setAnimationsEnabled(context: Context, on: Boolean) {
@@ -283,6 +289,13 @@ object SessionPrefs {
 
     fun setLibraryFavorites(context: Context, keys: Set<String>) {
         prefs(context).edit().putStringSet("libraryFavorites", keys.toSet()).apply()
+    }
+
+    fun storesTabOrderCustomized(context: Context): Boolean =
+        prefs(context).getBoolean("storesTabOrderCustomized", false)
+
+    fun setStoresTabOrderCustomized(context: Context, customized: Boolean) {
+        prefs(context).edit().putBoolean("storesTabOrderCustomized", customized).apply()
     }
 
     fun storesTabOrder(context: Context): List<String> = idList(prefs(context).getString("storesTabOrder", null))
@@ -700,6 +713,18 @@ object SessionPrefs {
     fun micEnabled(context: Context): Boolean = prefs(context).getBoolean("mic", false)
 
     fun micAsked(context: Context): Boolean = prefs(context).getBoolean("micAsked", false)
+
+    fun allFilesAsked(context: Context): Boolean = prefs(context).getBoolean("allFilesAsked", false)
+
+    fun setAllFilesAsked(context: Context) {
+        prefs(context).edit().putBoolean("allFilesAsked", true).apply()
+    }
+
+    fun bluetoothAsked(context: Context): Boolean = prefs(context).getBoolean("bluetoothAsked", false)
+
+    fun setBluetoothAsked(context: Context) {
+        prefs(context).edit().putBoolean("bluetoothAsked", true).apply()
+    }
 
     fun setMicAsked(context: Context) {
         prefs(context).edit().putBoolean("micAsked", true).apply()
