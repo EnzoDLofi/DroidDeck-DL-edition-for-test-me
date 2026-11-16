@@ -54,6 +54,8 @@ void main() {
         return;
     }
 
+    // Fused mobile SMAA-style path: edge detection, bounded edge search,
+    // local area estimation and neighborhood blending in one fragment pass.
     bool verticalEdge = vertical >= horizontal;
     vec2 tangent = verticalEdge ? vec2(0.0, px.y) : vec2(px.x, 0.0);
     vec2 normal = verticalEdge
@@ -72,30 +74,17 @@ void main() {
 
     float span = negativeRun + positiveRun;
     float edgeConfidence = smoothstep(threshold, threshold * 2.5, strongest);
+    float endpointArea = 1.0 / (1.0 + span * 0.055);
+    float areaWeight = mix(0.22, 0.38, clamp(span / 8.0, 0.0, 1.0));
 
     float nw = luma(texture(InputTexture, uv + vec2(-px.x, -px.y)).rgb);
     float ne = luma(texture(InputTexture, uv + vec2(px.x, -px.y)).rgb);
     float sw = luma(texture(InputTexture, uv + vec2(-px.x, px.y)).rgb);
     float se = luma(texture(InputTexture, uv + vec2(px.x, px.y)).rgb);
-    float endpointPattern = clamp(abs(negativeRun - positiveRun) / max(span, 1.0), 0.0, 1.0);
-    float endpointArea = endpointPattern / (1.0 + span * 0.055);
-    float crossingA = verticalEdge ? abs(nw - ne) : abs(nw - sw);
-    float crossingB = verticalEdge ? abs(sw - se) : abs(ne - se);
-    float crossingContrast = abs(crossingA - crossingB);
-    float crossingPattern = smoothstep(threshold, threshold * 2.5, crossingContrast);
-    float areaWeight = 0.38 * crossingPattern * clamp(span / 4.0, 0.0, 1.0);
     float diagonalContrast = max(abs(nw - se), abs(ne - sw));
     float cornerFactor = 1.0 - 0.18 * smoothstep(threshold, threshold * 3.0, diagonalContrast);
-    float baseWeight = areaWeight * endpointArea * edgeConfidence * cornerFactor;
 
-    float diagonalStrength = abs(abs(nw - se) - abs(ne - sw));
-    float diagonalPattern = smoothstep(threshold, threshold * 2.5, diagonalStrength);
-    float diagonalFallback = 0.16 * diagonalPattern * edgeConfidence * cornerFactor;
-
-    float weight = clamp(
-        baseWeight <= 0.0001 ? diagonalFallback : baseWeight,
-        0.0, 0.42
-    );
+    float weight = clamp(areaWeight * endpointArea * edgeConfidence * cornerFactor, 0.0, 0.42);
     vec3 across = texture(InputTexture, uv + normal * px).rgb;
     outColor = vec4(mix(center.rgb, across, weight), center.a);
 }
