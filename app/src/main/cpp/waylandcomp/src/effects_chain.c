@@ -641,10 +641,16 @@ static void barrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImag
 }
 
 static void pass_nis_compute(VkCommandBuffer cmd, struct fx_target *dst, const struct pc_nis_compute *pc) {
-    /* The dispatch overwrites the full target. Discard its prior contents and
-     * synchronize earlier accesses before the compute shader writes it again. */
+    /* Order prior uses before the overwrite, then discard the old image contents
+     * with a valid UNDEFINED -> GENERAL layout transition. */
+    VkMemoryBarrier prior = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                             .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                             .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT};
+    g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                            1, &prior, 0, NULL, 0, NULL);
     barrier(cmd, dst->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
     dst->layout = VK_IMAGE_LAYOUT_GENERAL;
     g_vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_nis_compute_pipe);
