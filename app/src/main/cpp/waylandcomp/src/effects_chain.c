@@ -729,7 +729,7 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
     }
     const int nfx = effect_count(s);
     const int effects_ready = (spatial || nfx) && objects_ensure() == 0;
-    int nis_compute = effects_ready && spatial == 7 && g_nis_compute_pipe && g_fx_fmt == FX_FORMAT && !g_scene_is_pq && nis_compute_format_supported();
+    int nis_compute = effects_ready && spatial == 7 && g_nis_compute_pipe && g_fx_fmt == FX_FORMAT && !g_scene_is_pq && nis_compute_format_supported() && vkp_compute_queue_supported();
     const int resize = cw != scene_w || ch != scene_h;
     const int fuse_toon_color = s->toon && s->color_on && g_fx_fmt == FX_FORMAT;
     const int fuse_fxaa_toon = 0;
