@@ -17,10 +17,9 @@
 //   - Input support texels are fetched at integer texel centers with clamping,
 //     matching the existing linear sampler's behavior at those coordinates.
 //   - The final color tap remains a filtered texture sample.
-//   - This file is intentionally not wired into the compositor yet. It requires
-//     a compute pipeline, storage-image output, descriptor layout, push constants,
-//     dispatch, and image barriers before it can replace the production fragment
-//     shader. Treat it as an experiment until compiled and image-tested.
+//   - The compositor can dispatch this path when the embedded shader is available
+//     and the selected queue and output format support compute. Runtime image-quality
+//     and performance testing is still needed.
 //   - The coefficient banks and SDR math are retained from the fragment shader.
 //   - fp32 only; HDR mode remains SDR, matching the existing NIS path.
 //
@@ -422,16 +421,15 @@ void main() {
     if (gid.x >= pc.outputSize.x || gid.y >= pc.outputSize.y) return;
 
     vec2 fragTexCoord = (vec2(gid) + vec2(0.5)) / vec2(pc.outputSize);
-    float srcX = fragTexCoord.x * inSize.x - 0.5;
-    float srcY = fragTexCoord.y * inSize.y - 0.5;
-    float fsx = floor(srcX);
-    float fsy = floor(srcY);
-    float fx = srcX - fsx;
-    float fy = srcY - fsy;
+    // Derive the phase and shared-tile index from the same relative coordinate.
+    // This avoids a one-texel disagreement from separately rounded source mappings.
+    vec2 srcRelative = fract(baseSrc) + vec2(lid) * inSize / vec2(pc.outputSize);
+    float fx = fract(srcRelative.x);
+    float fy = fract(srcRelative.y);
     int fx_int = int(fx * float(kPhaseCount));
     int fy_int = int(fy * float(kPhaseCount));
 
-    ivec2 tileOffset = ivec2(int(fsx), int(fsy)) - ivec2(2) - ivec2(tileOrigin);
+    ivec2 tileOffset = ivec2(floor(srcRelative)) + ivec2(2);
     float p[6][6];
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 6; ++j) {
