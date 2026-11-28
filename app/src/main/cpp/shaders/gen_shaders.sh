@@ -24,9 +24,10 @@ fi
 
 # Probe actual -Os compilation before any generated header can be overwritten.
 # Some glslangValidator builds advertise options they cannot successfully use.
-probe_src="$(mktemp "./.glslang-os-probe.XXXXXX")"
-probe_spv="${probe_src}.spv"
-trap 'rm -f "$probe_src" "$probe_spv"' EXIT
+probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/glslang-os-probe.XXXXXX")"
+probe_src="${probe_dir}/probe.comp"
+probe_spv="${probe_dir}/probe.spv"
+trap 'rm -rf "$probe_dir"' EXIT
 cat > "$probe_src" <<'GLSL'
 #version 450
 layout(local_size_x = 1) in;
@@ -36,7 +37,7 @@ GLSLANG_HAS_OS=0
 if glslangValidator -S comp -V --target-env vulkan1.0 -Os "$probe_src" -o "$probe_spv" >/dev/null 2>&1; then
     GLSLANG_HAS_OS=1
 fi
-rm -f "$probe_src" "$probe_spv"
+rm -rf "$probe_dir"
 trap - EXIT
 
 gen() {
