@@ -423,9 +423,10 @@ void main() {
 
     vec2 fragTexCoord = (vec2(gid) + vec2(0.5)) / vec2(pc.outputSize);
     vec2 srcCoord = (vec2(gid) + vec2(0.5)) * inSize / vec2(pc.outputSize) - 0.5;
-    // Use the exact group-base calculation for the first lane so its support
-    // window starts at tile index (0, 0), without changing other lanes' mapping.
-    if (all(equal(gid, groupBase))) srcCoord = baseSrc;
+    // Reuse the group's exact base coordinate on its first row and column.
+    // This keeps floor(srcCoord) aligned with tileOrigin despite rounding.
+    if (gid.x == groupBase.x) srcCoord.x = baseSrc.x;
+    if (gid.y == groupBase.y) srcCoord.y = baseSrc.y;
     float srcX = srcCoord.x;
     float srcY = srcCoord.y;
     float fsx = floor(srcX);
