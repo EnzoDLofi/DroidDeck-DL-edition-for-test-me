@@ -64,6 +64,7 @@ struct vkp_draw {
 };
 
 const char *vkp_gpu_name(void);
+int vkp_compute_queue_supported(void);
 
 int vkp_ready(void);
 int vkp_has_window(void);
