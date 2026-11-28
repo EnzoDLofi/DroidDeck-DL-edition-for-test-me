@@ -22,6 +22,14 @@ if ! command -v glslangValidator >/dev/null 2>&1; then
     exit 1
 fi
 
+# Detect optimizer support before any header can be overwritten. Older builds
+# of glslangValidator may reject -Os; those can still generate valid SPIR-V
+# without optimization.
+GLSLANG_HAS_OS=0
+if glslangValidator --help 2>&1 | grep -q -- '-Os'; then
+    GLSLANG_HAS_OS=1
+fi
+
 gen() {
     local src="$1"          # e.g. nis.frag
     local base="${src%.*}"  # nis
@@ -35,7 +43,12 @@ gen() {
     local out="${base}_${ext}.h"
     echo "  ${src} -> ${out}  (--vn ${vn})"
     if [ "$(basename "${src}")" = "nis.frag" ] || [ "$ext" = "comp" ]; then
-        glslangValidator -V --target-env vulkan1.0 -Os "${src}" --vn "${vn}" -o "${out}"
+        if [ "$GLSLANG_HAS_OS" -eq 1 ]; then
+            glslangValidator -V --target-env vulkan1.0 -Os "${src}" --vn "${vn}" -o "${out}"
+        else
+            echo "  note: glslangValidator has no -Os support; compiling without optimization" >&2
+            glslangValidator -V --target-env vulkan1.0 "${src}" --vn "${vn}" -o "${out}"
+        fi
     else
         glslangValidator -V "${src}" --vn "${vn}" -o "${out}"
     fi
