@@ -8,6 +8,7 @@ const char *vkp_gpu_name(void) { return "cache test"; }
 void droiddeck_log(const char *tag, const char *fmt, ...) { (void)tag; (void)fmt; }
 #include "vk_loader.h"
 struct vk_api g_vk;
+int vkp_compute_queue_supported(void) { return 1; }
 #include "effects_chain.c"
 
 static unsigned views, sets, freed_views, freed_sets;
