@@ -219,7 +219,6 @@ struct fx_target {
     VkDescriptorSet compute_ds;
     VkImageView compute_src_view;
     VkImageUsageFlags usage;
-    VkImageLayout layout;
     int w, h;
 };
 
@@ -664,7 +663,6 @@ static void pass_nis_compute(VkCommandBuffer cmd, struct fx_target *dst, const s
     barrier(cmd, dst->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-    dst->layout = VK_IMAGE_LAYOUT_GENERAL;
     g_vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_nis_compute_pipe);
     g_vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_compute_pl, 0, 1, &dst->compute_ds, 0, NULL);
     g_vk.CmdPushConstants(cmd, g_compute_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(*pc), pc);
@@ -672,7 +670,6 @@ static void pass_nis_compute(VkCommandBuffer cmd, struct fx_target *dst, const s
     barrier(cmd, dst->img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 static void pass_renderpass(VkCommandBuffer cmd, VkRenderPass render_pass,
                  VkPipeline p, struct fx_target *dst, VkDescriptorSet src,
@@ -685,7 +682,6 @@ static void pass_renderpass(VkCommandBuffer cmd, VkRenderPass render_pass,
     g_vk.CmdPushConstants(cmd, g_pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pcsz, pc);
     g_vk.CmdDraw(cmd, 4, 1, 0, 0);
     g_vk.CmdEndRenderPass(cmd);
-    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 static void pass(VkCommandBuffer cmd, VkPipeline p, struct fx_target *dst,
@@ -705,7 +701,6 @@ static void pass_dual(VkCommandBuffer cmd, VkPipeline p, struct fx_target *dst,
     g_vk.CmdPushConstants(cmd, g_pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pcsz, pc);
     g_vk.CmdDraw(cmd, 4, 1, 0, 0);
     g_vk.CmdEndRenderPass(cmd);
-    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 static const float FULL_NDC[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
@@ -844,7 +839,6 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
             barrier(cmd, dst->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-            dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             cur = dst; cur_ds = dst->ds;
             cur_compute_writer = 0;
         } else {
