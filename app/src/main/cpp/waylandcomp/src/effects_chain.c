@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "upscale_vert.h"
 #include "sgsr_frag.h"
@@ -352,24 +353,35 @@ void vkp_effects_forget_image(VkImage img) {
 
 static int target0_ensure_for_nis(int w, int h, int *compute) {
     static int failed_storage_w, failed_storage_h;
+    static int64_t failed_storage_ms;
     const VkImageUsageFlags storage_usage = FX_TARGET_USAGE | VK_IMAGE_USAGE_STORAGE_BIT;
     if (*compute) {
         if (g_t[0].img && g_t[0].w == w && g_t[0].h == h && g_t[0].usage == storage_usage)
             return 0;
         const int fragment_target_ready = g_t[0].img && g_t[0].w == w && g_t[0].h == h &&
                                           g_t[0].usage == FX_TARGET_USAGE;
-        if (!(fragment_target_ready && failed_storage_w == w && failed_storage_h == h)) {
+        struct timespec now;
+        int64_t now_ms = 0;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+            now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+        const int retry_suppressed = fragment_target_ready &&
+            failed_storage_w == w && failed_storage_h == h &&
+            now_ms > 0 && now_ms >= failed_storage_ms &&
+            now_ms - failed_storage_ms < 5000;
+        if (!retry_suppressed) {
             struct fx_target replacement = {0};
             if (target_ensure_format(&replacement, w, h, storage_usage, "NIS compute",
                                      g_fx_fmt, g_rp) == 0) {
                 target_destroy(&g_t[0]);
                 g_t[0] = replacement;
                 failed_storage_w = failed_storage_h = 0;
+                failed_storage_ms = 0;
                 return 0;
             }
             target_destroy(&replacement);
             failed_storage_w = w;
             failed_storage_h = h;
+            failed_storage_ms = now_ms;
         }
         *compute = 0;
         droiddeck_log("effects", "NIS compute output unavailable; using fragment NIS");
