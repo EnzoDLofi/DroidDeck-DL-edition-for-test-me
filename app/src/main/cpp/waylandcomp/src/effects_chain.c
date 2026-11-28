@@ -315,7 +315,11 @@ static int target_ensure_format(struct fx_target *t, int w, int h,
                    (unsigned long long)req.size, (int)r);
         target_destroy(t); return -1;
     }
-    g_vk.BindImageMemory(g_dev, t->img, t->mem, 0);
+    r = g_vk.BindImageMemory(g_dev, t->img, t->mem, 0);
+    if (r != VK_SUCCESS) {
+        droiddeck_log("error", "effects: %s image %dx%d: vkBindImageMemory %d", what, w, h, (int)r);
+        target_destroy(t); return -1;
+    }
     if (!(t->view = make_view(t->img, format))) { target_destroy(t); return -1; }
     VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = render_pass,
                                   .attachmentCount = 1, .pAttachments = &t->view, .width = (uint32_t)w,
@@ -332,6 +336,11 @@ static int target_ensure(struct fx_target *t, int w, int h,
 }
 
 static void scene_release(void) {
+    if (g_scene.view) {
+        for (size_t i = 0; i < sizeof(g_t) / sizeof(g_t[0]); i++)
+            if (g_t[i].compute_src_view == g_scene.view)
+                g_t[i].compute_src_view = VK_NULL_HANDLE;
+    }
     if (g_scene.ds) g_vk.FreeDescriptorSets(g_dev, g_dpool, 1, &g_scene.ds);
     if (g_scene.view) g_vk.DestroyImageView(g_dev, g_scene.view, NULL);
     memset(&g_scene, 0, sizeof(g_scene));
@@ -342,8 +351,26 @@ void vkp_effects_forget_image(VkImage img) {
 }
 
 static int target0_ensure_for_nis(int w, int h, int *compute) {
-    if (*compute && target_ensure(&g_t[0], w, h, FX_TARGET_USAGE | VK_IMAGE_USAGE_STORAGE_BIT, "NIS compute") == 0) return 0;
+    static int failed_storage_w, failed_storage_h;
+    const VkImageUsageFlags storage_usage = FX_TARGET_USAGE | VK_IMAGE_USAGE_STORAGE_BIT;
     if (*compute) {
+        if (g_t[0].img && g_t[0].w == w && g_t[0].h == h && g_t[0].usage == storage_usage)
+            return 0;
+        const int fragment_target_ready = g_t[0].img && g_t[0].w == w && g_t[0].h == h &&
+                                          g_t[0].usage == FX_TARGET_USAGE;
+        if (!(fragment_target_ready && failed_storage_w == w && failed_storage_h == h)) {
+            struct fx_target replacement = {0};
+            if (target_ensure_format(&replacement, w, h, storage_usage, "NIS compute",
+                                     g_fx_fmt, g_rp) == 0) {
+                target_destroy(&g_t[0]);
+                g_t[0] = replacement;
+                failed_storage_w = failed_storage_h = 0;
+                return 0;
+            }
+            target_destroy(&replacement);
+            failed_storage_w = w;
+            failed_storage_h = h;
+        }
         *compute = 0;
         droiddeck_log("effects", "NIS compute output unavailable; using fragment NIS");
     }
@@ -614,11 +641,11 @@ static void barrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImag
 }
 
 static void pass_nis_compute(VkCommandBuffer cmd, struct fx_target *dst, const struct pc_nis_compute *pc) {
-    VkImageLayout old_layout = dst->layout;
-    VkPipelineStageFlags src_stage = old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    VkAccessFlags src_access = old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? VK_ACCESS_SHADER_READ_BIT : 0;
-    barrier(cmd, dst->img, old_layout, VK_IMAGE_LAYOUT_GENERAL,
-            src_stage, src_access, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+    /* The dispatch overwrites the full target. Discard its prior contents and
+     * synchronize earlier accesses before the compute shader writes it again. */
+    barrier(cmd, dst->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
     dst->layout = VK_IMAGE_LAYOUT_GENERAL;
     g_vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_nis_compute_pipe);
     g_vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_compute_pl, 0, 1, &dst->compute_ds, 0, NULL);
@@ -726,6 +753,7 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
 
         VkDescriptorSet cur_ds;
         struct fx_target *cur = NULL;
+        int cur_compute_writer = 0;
 #define FREE_TARGET() ((cur == &g_t[0]) ? &g_t[1] : &g_t[0])
         const float sharp01 = (float)s->sharp_pct / 100.0f;
         if (nis_compute && nis_compute_ds_ensure(&g_t[0], g_scene.view) != 0) {
@@ -783,6 +811,7 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
                 }
             }
             cur = dst; cur_ds = dst->ds;
+            cur_compute_writer = spatial == 7 && nis_compute;
         } else if (resize) {
             struct fx_target *dst = FREE_TARGET();
             barrier(cmd, scene, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -799,6 +828,7 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
             dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             cur = dst; cur_ds = dst->ds;
+            cur_compute_writer = 0;
         } else {
             barrier(cmd, scene, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -868,12 +898,14 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
             case FX_DEBAND: pr.extra = (float)s->deband_pct / 100.0f; pass(cmd, g_pipe[P_DEBAND], dst, cur_ds, &pr, sizeof(pr)); break;
             }
             cur = dst; cur_ds = dst->ds;
+            cur_compute_writer = 0;
         }
 
 #undef FREE_TARGET
         if (cur) {
             barrier(cmd, cur->img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    cur_compute_writer ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    cur_compute_writer ? VK_ACCESS_SHADER_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
             *res_w = cur->w; *res_h = cur->h;
             return cur->img;
