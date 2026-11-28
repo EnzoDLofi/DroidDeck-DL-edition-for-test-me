@@ -12,6 +12,12 @@
 #include "sgsr_frag.h"
 #include "sgsr_quality_frag.h"
 #include "nis_frag.h"
+#if defined(__has_include)
+#if __has_include("nis_tiled_comp.h")
+#include "nis_tiled_comp.h"
+#define NIS_COMPUTE_SHADER_AVAILABLE 1
+#endif
+#endif
 #include "fsr_easu_frag.h"
 #include "fsr_rcas_frag.h"
 #include "cas_frag.h"
@@ -209,6 +215,10 @@ static void rcas_con(struct pc_rcas *r, float scale01) {
 
 struct fx_target {
     VkImage img; VkDeviceMemory mem; VkImageView view; VkFramebuffer fb; VkDescriptorSet ds;
+    VkDescriptorSet compute_ds;
+    VkImageView compute_src_view;
+    VkImageUsageFlags usage;
+    VkImageLayout layout;
     int w, h;
 };
 
@@ -221,6 +231,10 @@ static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_pl;
 static VkDescriptorPool g_dpool;
 static VkSampler g_sampler;
+static VkDescriptorSetLayout g_compute_dsl;
+static VkPipelineLayout g_compute_pl;
+static VkDescriptorPool g_compute_dpool;
+static VkPipeline g_nis_compute_pipe;
 enum { P_SGSR, P_SGSR_HQ, P_NIS, P_EASU, P_RCAS, P_CAS, P_COLOR, P_FXAA, P_FXAA_TOON, P_SMAA_EDGE, P_SMAA_WEIGHTS, P_SMAA_BLEND, P_TOON, P_TOON_COLOR, P_HDR, P_NTSC, P_CRT, P_DEBAND, P_COUNT };
 static VkPipeline g_pipe[P_COUNT];
 static struct fx_target g_t[2], g_mid, g_smaa_edges, g_smaa_weights;
@@ -262,6 +276,7 @@ static VkImageView make_view(VkImage img, VkFormat fmt) {
 }
 
 static void target_destroy(struct fx_target *t) {
+    if (t->compute_ds && g_compute_dpool) g_vk.FreeDescriptorSets(g_dev, g_compute_dpool, 1, &t->compute_ds);
     if (t->img) blendp_forget_image(t->img);
     if (t->ds) g_vk.FreeDescriptorSets(g_dev, g_dpool, 1, &t->ds);
     if (t->fb) g_vk.DestroyFramebuffer(g_dev, t->fb, NULL);
@@ -278,7 +293,7 @@ static void target_destroy(struct fx_target *t) {
 static int target_ensure_format(struct fx_target *t, int w, int h,
                                 VkImageUsageFlags usage, const char *what,
                                 VkFormat format, VkRenderPass render_pass) {
-    if (t->img && t->w == w && t->h == h) return 0;
+    if (t->img && t->w == w && t->h == h && t->usage == usage) return 0;
     target_destroy(t);
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, .imageType = VK_IMAGE_TYPE_2D,
@@ -307,7 +322,7 @@ static int target_ensure_format(struct fx_target *t, int w, int h,
                                   .height = (uint32_t)h, .layers = 1};
     if (g_vk.CreateFramebuffer(g_dev, &fi, NULL, &t->fb) != VK_SUCCESS) { target_destroy(t); return -1; }
     if (!(t->ds = alloc_ds(t->view))) { target_destroy(t); return -1; }
-    t->w = w; t->h = h;
+    t->w = w; t->h = h; t->usage = usage;
     return 0;
 }
 
@@ -326,6 +341,14 @@ void vkp_effects_forget_image(VkImage img) {
     if (img && g_scene.img == img) scene_release();
 }
 
+static int target0_ensure_for_nis(int w, int h, int *compute) {
+    if (*compute && target_ensure(&g_t[0], w, h, FX_TARGET_USAGE | VK_IMAGE_USAGE_STORAGE_BIT, "NIS compute") == 0) return 0;
+    if (*compute) {
+        *compute = 0;
+        droiddeck_log("effects", "NIS compute output unavailable; using fragment NIS");
+    }
+    return target_ensure(&g_t[0], w, h, FX_TARGET_USAGE, "chain");
+}
 static int scene_ensure(VkImage img, int w, int h) {
     if (g_scene.img == img && g_scene.w == w && g_scene.h == h && g_scene.ds) return 0;
     scene_release();
@@ -389,6 +412,10 @@ static void objects_destroy(void) {
     target_destroy(&g_t[0]); target_destroy(&g_t[1]); target_destroy(&g_mid);
     target_destroy(&g_smaa_edges); target_destroy(&g_smaa_weights);
     for (int i = 0; i < P_COUNT; i++) { if (g_pipe[i]) g_vk.DestroyPipeline(g_dev, g_pipe[i], NULL); g_pipe[i] = VK_NULL_HANDLE; }
+    if (g_nis_compute_pipe) g_vk.DestroyPipeline(g_dev, g_nis_compute_pipe, NULL);
+    if (g_compute_dpool) g_vk.DestroyDescriptorPool(g_dev, g_compute_dpool, NULL);
+    if (g_compute_pl) g_vk.DestroyPipelineLayout(g_dev, g_compute_pl, NULL);
+    if (g_compute_dsl) g_vk.DestroyDescriptorSetLayout(g_dev, g_compute_dsl, NULL);
     if (g_dpool) g_vk.DestroyDescriptorPool(g_dev, g_dpool, NULL);
     if (g_pl) g_vk.DestroyPipelineLayout(g_dev, g_pl, NULL);
     if (g_dsl) g_vk.DestroyDescriptorSetLayout(g_dev, g_dsl, NULL);
@@ -396,6 +423,8 @@ static void objects_destroy(void) {
     if (g_smaa_rp) g_vk.DestroyRenderPass(g_dev, g_smaa_rp, NULL);
     if (g_rp) g_vk.DestroyRenderPass(g_dev, g_rp, NULL);
     g_dpool = VK_NULL_HANDLE; g_pl = VK_NULL_HANDLE; g_dsl = VK_NULL_HANDLE;
+    g_compute_dpool = VK_NULL_HANDLE; g_compute_pl = VK_NULL_HANDLE; g_compute_dsl = VK_NULL_HANDLE;
+    g_nis_compute_pipe = VK_NULL_HANDLE;
     g_sampler = VK_NULL_HANDLE; g_rp = VK_NULL_HANDLE; g_smaa_rp = VK_NULL_HANDLE;
     g_ready = 0;
 }
@@ -421,6 +450,68 @@ void vkp_effects_set_formats(VkFormat scene_fmt, VkFormat target_fmt, int scene_
     }
 }
 
+struct pc_nis_compute { float ndc[4]; float vp[4]; float sharpness; uint32_t pad; int32_t output_size[2]; };
+_Static_assert(sizeof(struct pc_nis_compute) == 48, "NIS compute push constants layout mismatch");
+
+static int nis_compute_format_supported(void) {
+    VkFormatProperties props;
+    g_vk.GetPhysicalDeviceFormatProperties(g_pd, FX_FORMAT, &props);
+    return (props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+}
+
+static int nis_compute_ds_ensure(struct fx_target *dst, VkImageView src_view) {
+    if (!g_compute_dpool || !g_compute_dsl || !dst->view || !src_view) return -1;
+    if (dst->compute_ds && dst->compute_src_view == src_view) return 0;
+    if (!dst->compute_ds) {
+        VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = g_compute_dpool, .descriptorSetCount = 1, .pSetLayouts = &g_compute_dsl};
+        if (g_vk.AllocateDescriptorSets(g_dev, &ai, &dst->compute_ds) != VK_SUCCESS) return -1;
+    }
+    VkDescriptorImageInfo input = {.sampler = g_sampler, .imageView = src_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo output = {.imageView = dst->view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[2] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dst->compute_ds, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &input},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dst->compute_ds, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &output}
+    };
+    g_vk.UpdateDescriptorSets(g_dev, 2, writes, 0, NULL);
+    dst->compute_src_view = src_view;
+    return 0;
+}
+
+static void nis_compute_objects_ensure(void) {
+#ifdef NIS_COMPUTE_SHADER_AVAILABLE
+    VkDescriptorSetLayoutBinding bindings[2] = {
+        {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+        {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}
+    };
+    VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = bindings};
+    if (!g_vk.CreateComputePipelines || !g_vk.CmdDispatch || !g_vk.GetPhysicalDeviceFormatProperties ||
+        g_vk.CreateDescriptorSetLayout(g_dev, &dli, NULL, &g_compute_dsl) != VK_SUCCESS) goto fail;
+    VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(struct pc_nis_compute)};
+    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &g_compute_dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+    if (g_vk.CreatePipelineLayout(g_dev, &pli, NULL, &g_compute_pl) != VK_SUCCESS) goto fail;
+    VkDescriptorPoolSize sizes[2] = {
+        {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 2},
+        {.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 2}
+    };
+    VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = 2, .poolSizeCount = 2, .pPoolSizes = sizes};
+    if (g_vk.CreateDescriptorPool(g_dev, &dpi, NULL, &g_compute_dpool) != VK_SUCCESS) goto fail;
+    VkShaderModule module = shader(nis_tiled_comp_code, sizeof(nis_tiled_comp_code));
+    if (!module) goto fail;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module, .pName = "main"}, .layout = g_compute_pl};
+    VkResult result = g_vk.CreateComputePipelines(g_dev, VK_NULL_HANDLE, 1, &ci, NULL, &g_nis_compute_pipe);
+    g_vk.DestroyShaderModule(g_dev, module, NULL);
+    if (result != VK_SUCCESS) goto fail;
+    droiddeck_log("effects", "NIS tiled compute pipeline available");
+    return;
+fail:
+    if (g_nis_compute_pipe) g_vk.DestroyPipeline(g_dev, g_nis_compute_pipe, NULL);
+    if (g_compute_dpool) g_vk.DestroyDescriptorPool(g_dev, g_compute_dpool, NULL);
+    if (g_compute_pl) g_vk.DestroyPipelineLayout(g_dev, g_compute_pl, NULL);
+    if (g_compute_dsl) g_vk.DestroyDescriptorSetLayout(g_dev, g_compute_dsl, NULL);
+    g_nis_compute_pipe = VK_NULL_HANDLE; g_compute_dpool = VK_NULL_HANDLE; g_compute_pl = VK_NULL_HANDLE; g_compute_dsl = VK_NULL_HANDLE;
+    droiddeck_log("effects", "NIS tiled compute unavailable; fragment NIS remains active");
+#endif
+}
 static int objects_ensure(void) {
     if (g_ready) return g_ready == 1 ? 0 : -1;
     if (!g_dev || !g_vk.CreateGraphicsPipelines) { g_ready = -1; droiddeck_log("error", "effects: no device for the chain"); return -1; }
@@ -500,6 +591,7 @@ static int objects_ensure(void) {
     MK(P_DEBAND, deband_code, "deband");
 #undef MK
     g_vk.DestroyShaderModule(g_dev, vert, NULL);
+    nis_compute_objects_ensure();
     g_ready = 1;
     droiddeck_log("effects", "chain ready: 16 pipelines (SGSR, SGSR HQ, NIS, FSR EASU+RCAS, CAS, colour, FXAA, SMAA edge/weights/blend, Toon, HDR, NTSC, CRT, deband) on %s", vkp_gpu_name());
     return 0;
@@ -521,6 +613,22 @@ static void barrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImag
     g_vk.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &b);
 }
 
+static void pass_nis_compute(VkCommandBuffer cmd, struct fx_target *dst, const struct pc_nis_compute *pc) {
+    VkImageLayout old_layout = dst->layout;
+    VkPipelineStageFlags src_stage = old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkAccessFlags src_access = old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? VK_ACCESS_SHADER_READ_BIT : 0;
+    barrier(cmd, dst->img, old_layout, VK_IMAGE_LAYOUT_GENERAL,
+            src_stage, src_access, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+    dst->layout = VK_IMAGE_LAYOUT_GENERAL;
+    g_vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_nis_compute_pipe);
+    g_vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_compute_pl, 0, 1, &dst->compute_ds, 0, NULL);
+    g_vk.CmdPushConstants(cmd, g_compute_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(*pc), pc);
+    g_vk.CmdDispatch(cmd, ((uint32_t)dst->w + 7u) / 8u, ((uint32_t)dst->h + 7u) / 8u, 1);
+    barrier(cmd, dst->img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
 static void pass_renderpass(VkCommandBuffer cmd, VkRenderPass render_pass,
                  VkPipeline p, struct fx_target *dst, VkDescriptorSet src,
                  const void *pc, uint32_t pcsz) {
@@ -532,6 +640,7 @@ static void pass_renderpass(VkCommandBuffer cmd, VkRenderPass render_pass,
     g_vk.CmdPushConstants(cmd, g_pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pcsz, pc);
     g_vk.CmdDraw(cmd, 4, 1, 0, 0);
     g_vk.CmdEndRenderPass(cmd);
+    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 static void pass(VkCommandBuffer cmd, VkPipeline p, struct fx_target *dst,
@@ -551,6 +660,7 @@ static void pass_dual(VkCommandBuffer cmd, VkPipeline p, struct fx_target *dst,
     g_vk.CmdPushConstants(cmd, g_pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pcsz, pc);
     g_vk.CmdDraw(cmd, 4, 1, 0, 0);
     g_vk.CmdEndRenderPass(cmd);
+    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 static const float FULL_NDC[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
@@ -591,6 +701,8 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
         droiddeck_log("effects", "NIS supported again; NIS active");
     }
     const int nfx = effect_count(s);
+    const int effects_ready = (spatial || nfx) && objects_ensure() == 0;
+    int nis_compute = effects_ready && spatial == 7 && g_nis_compute_pipe && g_fx_fmt == FX_FORMAT && !g_scene_is_pq && nis_compute_format_supported();
     const int resize = cw != scene_w || ch != scene_h;
     const int fuse_toon_color = s->toon && s->color_on && g_fx_fmt == FX_FORMAT;
     const int fuse_fxaa_toon = 0;
@@ -598,8 +710,8 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
         effect_count(s) - (fuse_toon_color ? 1 : 0) -
         (fuse_fxaa_toon ? 1 : 0);
 
-    if ((spatial || nfx) && objects_ensure() == 0 && scene_ensure(scene, scene_w, scene_h) == 0 &&
-        target_ensure(&g_t[0], cw, ch, FX_TARGET_USAGE, "chain") == 0 && (chain_passes < 2 || target_ensure(&g_t[1], cw, ch, FX_TARGET_USAGE, "chain") == 0) &&
+    if (effects_ready && scene_ensure(scene, scene_w, scene_h) == 0 &&
+        target0_ensure_for_nis(cw, ch, &nis_compute) == 0 && (chain_passes < 2 || target_ensure(&g_t[1], cw, ch, FX_TARGET_USAGE, "chain") == 0) &&
         (!(spatial == 4 || spatial == 5) || s->sharp_pct == 0 ||
          target_ensure(&g_mid, cw, ch, FX_SCRATCH_USAGE, "EASU") == 0)) {
         if (s->aa_mode == 2 &&
@@ -616,6 +728,10 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
         struct fx_target *cur = NULL;
 #define FREE_TARGET() ((cur == &g_t[0]) ? &g_t[1] : &g_t[0])
         const float sharp01 = (float)s->sharp_pct / 100.0f;
+        if (nis_compute && nis_compute_ds_ensure(&g_t[0], g_scene.view) != 0) {
+            nis_compute = 0;
+            droiddeck_log("effects", "NIS compute descriptors unavailable; using fragment NIS");
+        }
 
         VkViewport chain_vp = {0, 0, (float)cw, (float)ch, 0, 1};
         VkRect2D chain_sc = {{0, 0}, {(uint32_t)cw, (uint32_t)ch}};
@@ -625,9 +741,18 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
         if (spatial) {
             barrier(cmd, scene, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+                    nis_compute ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_SHADER_READ_BIT);
             struct fx_target *dst = FREE_TARGET();
-            if (spatial == 3 || spatial == 8 || spatial == 7) {
+            if (spatial == 7 && nis_compute) {
+                struct pc_nis_compute pc = {0};
+                SET_NDC(pc);
+                pc.vp[0] = 1.0f / (float)scene_w; pc.vp[1] = 1.0f / (float)scene_h;
+                pc.vp[2] = (float)scene_w;        pc.vp[3] = (float)scene_h;
+                pc.sharpness = sharp01;
+                pc.output_size[0] = cw; pc.output_size[1] = ch;
+                pass_nis_compute(cmd, dst, &pc);
+            } else if (spatial == 3 || spatial == 8 || spatial == 7) {
                 struct pc_sgsr pc = {0};
                 SET_NDC(pc);
                 pc.vp[0] = 1.0f / (float)scene_w; pc.vp[1] = 1.0f / (float)scene_h;
@@ -672,6 +797,7 @@ VkImage vkp_effects_run(VkCommandBuffer cmd, VkImage scene, int scene_w, int sce
             barrier(cmd, dst->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+            dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             cur = dst; cur_ds = dst->ds;
         } else {
             barrier(cmd, scene, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,

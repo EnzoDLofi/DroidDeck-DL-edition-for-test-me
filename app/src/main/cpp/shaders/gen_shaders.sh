@@ -3,7 +3,7 @@
 #  Regenerate the committed SPIR-V headers (*_frag.h / *_vert.h) for the native
 #  Vulkan compositor's post-process shaders.
 #
-#  The Android NDK build does NOT compile GLSL; instead every *.frag / *.vert in
+#  The Android NDK build does NOT compile GLSL; instead every *.frag / *.vert / *.comp in
 #  this directory is pre-compiled to a SPIR-V uint32 array header that is #included
 #  by VulkanRendererContext.cpp. Run this whenever you edit a shader, then commit
 #  the regenerated *.h alongside the *.frag/*.vert source.
@@ -29,10 +29,12 @@ gen() {
     local vn="${base}_code"
     if [ "$ext" = "vert" ]; then
         vn="${base}_vert_code"
+    elif [ "$ext" = "comp" ]; then
+        vn="${base}_comp_code"
     fi
     local out="${base}_${ext}.h"
     echo "  ${src} -> ${out}  (--vn ${vn})"
-    if [ "$(basename "${src}")" = "nis.frag" ]; then
+    if [ "$(basename "${src}")" = "nis.frag" ] || [ "$ext" = "comp" ]; then
         glslangValidator -V --target-env vulkan1.0 -Os "${src}" --vn "${vn}" -o "${out}"
     else
         glslangValidator -V "${src}" --vn "${vn}" -o "${out}"
@@ -42,12 +44,12 @@ gen() {
 shaders=()
 if [ "$#" -gt 0 ]; then
     for name in "$@"; do
-        for f in "${name}.frag" "${name}.vert"; do
+        for f in "${name}.frag" "${name}.vert" "${name}.comp"; do
             [ -f "$f" ] && shaders+=("$f")
         done
     done
 else
-    for f in *.frag *.vert; do
+    for f in *.frag *.vert *.comp; do
         [ -f "$f" ] && shaders+=("$f")
     done
 fi
