@@ -24,21 +24,24 @@ fi
 
 # Probe actual -Os compilation before any generated header can be overwritten.
 # Some glslangValidator builds advertise options they cannot successfully use.
-probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/glslang-os-probe.XXXXXX")"
-probe_src="${probe_dir}/probe.comp"
-probe_spv="${probe_dir}/probe.spv"
-trap 'rm -rf "$probe_dir"' EXIT
-cat > "$probe_src" <<'GLSL'
+GLSLANG_HAS_OS=0
+if probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/glslang-os-probe.XXXXXX")"; then
+    probe_src="${probe_dir}/probe.comp"
+    probe_spv="${probe_dir}/probe.spv"
+    trap 'rm -rf "$probe_dir"' EXIT
+    cat > "$probe_src" <<'GLSL'
 #version 450
 layout(local_size_x = 1) in;
 void main() {}
 GLSL
-GLSLANG_HAS_OS=0
-if glslangValidator -S comp -V --target-env vulkan1.0 -Os "$probe_src" -o "$probe_spv" >/dev/null 2>&1; then
-    GLSLANG_HAS_OS=1
+    if glslangValidator -S comp -V --target-env vulkan1.0 -Os "$probe_src" -o "$probe_spv" >/dev/null 2>&1; then
+        GLSLANG_HAS_OS=1
+    fi
+    rm -rf "$probe_dir"
+    trap - EXIT
+else
+    echo "  note: could not create optimizer probe directory; compiling without optimization" >&2
 fi
-rm -rf "$probe_dir"
-trap - EXIT
 
 gen() {
     local src="$1"          # e.g. nis.frag
