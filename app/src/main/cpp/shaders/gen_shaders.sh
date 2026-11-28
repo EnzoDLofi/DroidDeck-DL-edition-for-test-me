@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Regenerate the committed SPIR-V headers (*_frag.h / *_vert.h) for the native
+#  Regenerate the committed SPIR-V headers (*_frag.h / *_vert.h / *_comp.h) for the native
 #  Vulkan compositor's post-process shaders.
 #
 #  The Android NDK build does NOT compile GLSL; instead every *.frag / *.vert / *.comp in
 #  this directory is pre-compiled to a SPIR-V uint32 array header that is #included
 #  by VulkanRendererContext.cpp. Run this whenever you edit a shader, then commit
-#  the regenerated *.h alongside the *.frag/*.vert source.
+#  the regenerated *.h alongside the *.frag/*.vert/*.comp source.
 #
 #  Requires glslangValidator on PATH (e.g. the Vulkan SDK or the termux package).
 #
