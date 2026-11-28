@@ -74,12 +74,13 @@ if [ "$needs_os" -eq 1 ]; then
     if probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/glslang-os-probe.XXXXXX")"; then
         probe_src="${probe_dir}/probe.comp"
         probe_spv="${probe_dir}/probe.spv"
-        if cat > "$probe_src" <<'GLSL' &&
+        if {
+            cat > "$probe_src" <<'GLSL'
 #version 450
 layout(local_size_x = 1) in;
 void main() {}
 GLSL
-            glslangValidator -S comp -V --target-env vulkan1.0 -Os "$probe_src" -o "$probe_spv" >/dev/null 2>&1; then
+        } && glslangValidator -S comp -V --target-env vulkan1.0 -Os "$probe_src" -o "$probe_spv" >/dev/null 2>&1; then
             GLSLANG_HAS_OS=1
         else
             echo "  note: optimizer probe failed; compiling without optimization" >&2
