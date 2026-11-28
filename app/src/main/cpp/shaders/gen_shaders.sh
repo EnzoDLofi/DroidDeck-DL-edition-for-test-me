@@ -22,27 +22,6 @@ if ! command -v glslangValidator >/dev/null 2>&1; then
     exit 1
 fi
 
-# Probe actual -Os compilation before any generated header can be overwritten.
-# Some glslangValidator builds advertise options they cannot successfully use.
-GLSLANG_HAS_OS=0
-if probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/glslang-os-probe.XXXXXX")"; then
-    probe_src="${probe_dir}/probe.comp"
-    probe_spv="${probe_dir}/probe.spv"
-    trap 'rm -rf "$probe_dir"' EXIT
-    cat > "$probe_src" <<'GLSL'
-#version 450
-layout(local_size_x = 1) in;
-void main() {}
-GLSL
-    if glslangValidator -S comp -V --target-env vulkan1.0 -Os "$probe_src" -o "$probe_spv" >/dev/null 2>&1; then
-        GLSLANG_HAS_OS=1
-    fi
-    rm -rf "$probe_dir"
-    trap - EXIT
-else
-    echo "  note: could not create optimizer probe directory; compiling without optimization" >&2
-fi
-
 gen() {
     local src="$1"          # e.g. nis.frag
     local base="${src%.*}"  # nis
@@ -78,6 +57,37 @@ else
     for f in *.frag *.vert *.comp; do
         [ -f "$f" ] && shaders+=("$f")
     done
+fi
+
+# Probe -Os only when a selected shader uses it. A failed probe must not
+# prevent unrelated shaders from being regenerated.
+GLSLANG_HAS_OS=0
+needs_os=0
+for s in "${shaders[@]}"; do
+    if [ "$(basename "$s")" = "nis.frag" ] || [ "${s##*.}" = "comp" ]; then
+        needs_os=1
+        break
+    fi
+done
+
+if [ "$needs_os" -eq 1 ]; then
+    if probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/glslang-os-probe.XXXXXX")"; then
+        probe_src="${probe_dir}/probe.comp"
+        probe_spv="${probe_dir}/probe.spv"
+        if cat > "$probe_src" <<'GLSL' &&
+#version 450
+layout(local_size_x = 1) in;
+void main() {}
+GLSL
+            glslangValidator -S comp -V --target-env vulkan1.0 -Os "$probe_src" -o "$probe_spv" >/dev/null 2>&1; then
+            GLSLANG_HAS_OS=1
+        else
+            echo "  note: optimizer probe failed; compiling without optimization" >&2
+        fi
+        rm -rf "$probe_dir" || true
+    else
+        echo "  note: could not create optimizer probe directory; compiling without optimization" >&2
+    fi
 fi
 
 for s in "${shaders[@]}"; do
