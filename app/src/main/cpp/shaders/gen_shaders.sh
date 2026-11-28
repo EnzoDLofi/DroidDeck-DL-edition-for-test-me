@@ -32,7 +32,11 @@ gen() {
     fi
     local out="${base}_${ext}.h"
     echo "  ${src} -> ${out}  (--vn ${vn})"
-    glslangValidator -V "${src}" --vn "${vn}" -o "${out}"
+    if [ "$(basename "${src}")" = "nis.frag" ]; then
+        glslangValidator -V --target-env vulkan1.0 -Os "${src}" --vn "${vn}" -o "${out}"
+    else
+        glslangValidator -V "${src}" --vn "${vn}" -o "${out}"
+    fi
 }
 
 shaders=()
