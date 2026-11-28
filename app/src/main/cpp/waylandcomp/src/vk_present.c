@@ -102,6 +102,7 @@ static VkDevice g_dev;
 static VkQueue g_queue;
 static PFN_vkGetAndroidHardwareBufferPropertiesANDROID g_ahb_properties;
 static uint32_t g_qfam;
+static VkQueueFlags g_qflags;
 static VkCommandPool g_pool;
 #define MAX_PRESENTS (1 + VKP_FG_MAX_GENERATIONS)
 static VkCommandBuffer g_cmds[MAX_PRESENTS];
@@ -230,6 +231,7 @@ extern void droiddeck_on_first_frame(void);
 
 static char g_gpu_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 const char *vkp_gpu_name(void) { return g_gpu_name; }
+int vkp_compute_queue_supported(void) { return (g_qflags & VK_QUEUE_COMPUTE_BIT) != 0; }
 
 static VkFormat drm_to_vk(uint32_t drm) {
     switch (drm) {
@@ -583,13 +585,16 @@ static int dev_init(void) {
     VkPhysicalDevice pds[8]; if (npd > 8) npd = 8;
     g_vk.EnumeratePhysicalDevices(g_inst, &npd, pds);
     g_pd = VK_NULL_HANDLE;
+    g_qflags = 0;
     for (uint32_t i = 0; i < npd && g_pd == VK_NULL_HANDLE; i++) {
         uint32_t nq = 0;
         g_vk.GetPhysicalDeviceQueueFamilyProperties(pds[i], &nq, NULL);
         VkQueueFamilyProperties qs[16]; if (nq > 16) nq = 16;
         g_vk.GetPhysicalDeviceQueueFamilyProperties(pds[i], &nq, qs);
         for (uint32_t q = 0; q < nq; q++)
-            if (qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) { g_pd = pds[i]; g_qfam = q; break; }
+            if (qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                g_pd = pds[i]; g_qfam = q; g_qflags = qs[q].queueFlags; break;
+            }
     }
     if (g_pd == VK_NULL_HANDLE) {
         LOGE("present: no graphics queue"); g_dev_state = -1;
