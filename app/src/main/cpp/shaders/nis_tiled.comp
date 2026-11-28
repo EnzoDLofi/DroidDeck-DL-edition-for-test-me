@@ -421,15 +421,18 @@ void main() {
     if (gid.x >= pc.outputSize.x || gid.y >= pc.outputSize.y) return;
 
     vec2 fragTexCoord = (vec2(gid) + vec2(0.5)) / vec2(pc.outputSize);
-    // Derive the phase and shared-tile index from the same relative coordinate.
-    // This avoids a one-texel disagreement from separately rounded source mappings.
-    vec2 srcRelative = fract(baseSrc) + vec2(lid) * inSize / vec2(pc.outputSize);
-    float fx = fract(srcRelative.x);
-    float fy = fract(srcRelative.y);
+    // Keep the multiply-before-divide order identical to baseSrc. In the first
+    // lane, floor(srcX/srcY) must equal floor(baseSrc) on both axes.
+    float srcX = (float(gid.x) + 0.5) * inSize.x / float(pc.outputSize.x) - 0.5;
+    float srcY = (float(gid.y) + 0.5) * inSize.y / float(pc.outputSize.y) - 0.5;
+    float fsx = floor(srcX);
+    float fsy = floor(srcY);
+    float fx = srcX - fsx;
+    float fy = srcY - fsy;
     int fx_int = int(fx * float(kPhaseCount));
     int fy_int = int(fy * float(kPhaseCount));
 
-    ivec2 tileOffset = ivec2(floor(srcRelative)) + ivec2(2);
+    ivec2 tileOffset = ivec2(int(fsx), int(fsy)) - tileOrigin;
     float p[6][6];
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 6; ++j) {
